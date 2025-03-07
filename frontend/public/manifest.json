@@ -1,0 +1,23 @@
+{
+    "manifest_version": 3,
+    "name": "My Extension",
+    "version": "1.0.0",
+    "description": "",
+    "icons": {
+        "32": "icon32.png"
+    },
+    "action": {
+        "default_title": "Click to open panel"
+    },
+    "permissions": ["scripting", "activeTab", "tabs", "sidePanel"],
+    "side_panel": {
+        "default_path": "index.html"
+    },
+    "host_permissions": [
+        "http://*/*",
+        "https://*/*"
+    ],
+    "background": {
+        "service_worker": "background.js"
+    }
+}
