@@ -9,7 +9,15 @@
     "action": {
         "default_title": "Click to open panel"
     },
-    "permissions": ["scripting", "activeTab", "tabs", "sidePanel"],
+    "permissions": [
+        "scripting", 
+        "activeTab", 
+        "tabs", 
+        "sidePanel", 
+        "identity", 
+        "storage",
+        "cookies"
+    ],
     "side_panel": {
         "default_path": "index.html"
     },
@@ -19,5 +27,18 @@
     ],
     "background": {
         "service_worker": "background.js"
-    }
+    },
+    "oauth2": {
+        "client_id": "751670405477-v2bpuvr1o3jgudu0pcr5fs9l87n7rs20.apps.googleusercontent.com",
+        "scopes": ["openid", "email", "profile"]
+    },
+    "content_security_policy": {
+        "extension_pages": "script-src 'self'; object-src 'self'; media-src example.com"
+    },
+    "web_accessible_resources": [
+        {
+          "resources": ["assets/*.svg", "placeholder.svg"],
+          "matches": ["<all_urls>"]
+        }
+    ]
 }

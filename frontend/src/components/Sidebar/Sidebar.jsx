@@ -11,7 +11,7 @@ const Sidebar = () => {
 
   const navItems = [
     { icon: MessageSquare, path: "/chat", label: "Chat" },
-    { icon: FileText, path: "/notes", label: "Notes" },
+    { icon: FileText, path: "/translation", label: "Translation" },
     { icon: MessageCircle, path: "/messages", label: "Messages" },
     { icon: File, path: "/files", label: "Files" },
     { icon: HelpCircle, path: "/help", label: "Help" },

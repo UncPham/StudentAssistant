@@ -1,8 +1,8 @@
 # main.py
-
-from fastapi import FastAPI, Body
+from fastapi import FastAPI, Body, Request
 import uvicorn
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.sessions import SessionMiddleware
 from pydantic import BaseModel  # BaseModel for structured data data models
 from typing import List  # List type hint for type annotations
 from langchain_community.tools.tavily_search import TavilySearchResults  # TavilySearchResults tool for handling search results from Tavily
@@ -10,7 +10,11 @@ import os
 from langgraph.prebuilt import create_react_agent  # Function to create a ReAct agent
 from langchain_groq import ChatGroq  # ChatGroq class for interacting with LLMs
 from dotenv import load_dotenv
+from config import CLIENT_ID
 # from backend import prompts
+from authlib.integrations.starlette_client import OAuth, OAuthError
+# from fastapi.staticfiles import StaticFiles
+
 from datetime import datetime, timezone
 from typing import List
 
@@ -35,15 +39,27 @@ system_prompt = SYSTEM_PROMPT.format(
 
 origins = [
     "http://localhost:5173",
-    # Add more origins here
 ]
+
+app.add_middleware(SessionMiddleware, secret_key="dummy_secret_key")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=origins, 
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*"],
+    allow_headers=["*"]
+)
+
+oauth = OAuth()
+oauth.register(
+    name="google",
+    server_metadata_url="https://accounts.google.com/.well-known/openid-configuration",
+    client_id=CLIENT_ID,
+    client_kwargs={
+        "scope": "openid email profile",
+        'redirect_uri': 'http://localhost:8000/auth'
+    },
 )
 
 class RequestState(BaseModel):
@@ -65,6 +81,24 @@ def chat_endpoint(request: RequestState = Body(...)):
 
     # Return the result as the response
     return result
+
+@app.get("/login")
+async def login(request: Request):
+    url = request.url_for("auth")
+    print(f"Redirecting to: {url}")
+    return await oauth.google.authorize_redirect(request, url)
+
+@app.get("/auth")
+async def auth(request: Request):
+    try: 
+        token = await oauth.google.authorize_access_token(request)
+    except OAuthError as e:
+        return e.error
+    user = token.get("userinfo")
+    if user:
+        request.session["user"] = dict(user)
+    return 
+
 
 # app.include_router(user.router)
 # app.include_router(auth.router, prefix="/auth")
