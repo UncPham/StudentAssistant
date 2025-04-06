@@ -1,2 +1,6 @@
 venv
 .env
+test.py
+client_secret.json
+client_secret_751670405477-ouesfd7es707mcmv6ag0trftbtek76it.apps.googleusercontent.com.json
+researcher.py

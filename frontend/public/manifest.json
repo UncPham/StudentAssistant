@@ -30,7 +30,10 @@
     },
     "oauth2": {
         "client_id": "751670405477-v2bpuvr1o3jgudu0pcr5fs9l87n7rs20.apps.googleusercontent.com",
-        "scopes": ["openid", "email", "profile"]
+        "scopes": [
+            "https://www.googleapis.com/auth/userinfo.email",
+            "https://www.googleapis.com/auth/userinfo.profile"
+        ]
     },
     "content_security_policy": {
         "extension_pages": "script-src 'self'; object-src 'self'; media-src example.com"

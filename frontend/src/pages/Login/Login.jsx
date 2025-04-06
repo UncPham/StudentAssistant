@@ -13,38 +13,19 @@ import axios from 'axios'
 const Login = ({ onLoginSuccess = () => {} }) => {
 
   const url = "http://localhost:8000"
-  const clientId = '751670405477-v2bpuvr1o3jgudu0pcr5fs9l87n7rs20.apps.googleusercontent.com';
-  const redirectUri = chrome.identity.getRedirectURL();
-  const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${clientId}&response_type=token&redirect_uri=${encodeURIComponent(redirectUri)}&scope=https://www.googleapis.com/auth/userinfo.email&prompt=select_account`;
-
 
   const handleGoogleLogin = async () => {
-    // try {
-    //   const response = await axios.get(`${url}/login`, 
-    //     // { withCredentials: true }
-    //   );
-    //   if (response) {
-    //     console.log("DItme")
-    //   }
-    // } catch (error) {
-    //   console.error("Failed to login:", error)
-    // }
-    // window.location.href = `${url}/login`;
-    
-    chrome.identity.launchWebAuthFlow(
-      {
-        url: authUrl,
-        interactive: true,
-      },
-      function (redirectUrl) {
-        if (chrome.runtime.lastError) {
-          console.error(chrome.runtime.lastError);
-          return;
-        }
-        // Xử lý redirectUrl để lấy access token từ URL fragment (với response_type=token)
-        console.log('Redirect URL:', redirectUrl);
-      }
-    );
+    try {
+      // Open the login URL in a popup window
+      const popup = window.open(
+        `${url}/login`,
+        'Google Login',
+        'width=500,height=600,left=400,top=100'
+      );
+
+    } catch (error) {
+      console.error("Failed to login:", error);
+    }
   }
 
   return (

@@ -1,0 +1,129 @@
+
+.chat-page {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  height: 100vh;
+  padding: 0 20px;
+}
+
+.chat-container {
+  width: 100%;
+  height: 100vh;
+  max-width: 800px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.chat-content {
+  display: flex;
+  flex: 1;
+  flex-direction: column; 
+  width: 100%;
+  height: 100%;
+  text-align: center;
+}
+
+.chat-title {
+  margin-top: auto;
+  font-size: 2rem;
+  font-weight: 600;
+}
+
+.message-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1rem;
+}
+
+.message.human{
+  max-width: 60%;
+  font-size: 0.95rem;
+  line-height: 1.4;
+  margin-left: auto;
+  word-break: break-word;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.user-message {
+  display: inline-block;
+  max-width: fit-content;
+  text-align: left;
+  padding: 12px 16px;
+  border-radius: 18px;
+  border-bottom-right-radius: 18px;
+  background-color: #ffffff60;
+  color: #ffffff;
+}
+
+.message.ai{
+  margin-right: auto;
+  max-width: 100%;
+  font-size: 0.95rem;
+  line-height: 1.4;
+  word-break: break-word;
+  display: flex;
+  justify-content: flex-start;
+}
+
+.system-message {
+  display: inline-block;
+  max-width: fit-content;
+  text-align: left;
+  color: #fff;
+}
+
+.chat-input-container {
+  max-height: 5rem;
+  position: relative;
+  width: 100%;
+  margin-top: 1rem;
+  margin-bottom: 1rem;
+}
+
+.chat-input {
+  width: 100%;
+  padding: 16px;
+  border-radius: 8px;
+  border: 1px solid var(--input-border);
+  background-color: var(--input-bg);
+  color: var(--input-text);
+  font-size: 1rem;
+  outline: none;
+  overflow-y: auto;
+  transition: border-color 0.3s;
+}
+
+.chat-input:focus {
+  border-color: var(--sidebar-active-color);
+}
+
+.input-actions {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  gap: 8px;
+}
+
+.action-button {
+  background: transparent;
+  border: none;
+  color: var(--sidebar-icon-color);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  transition: background-color 0.2s;
+}
+
+.action-button:hover {
+  background-color: var(--button-hover);
+}
