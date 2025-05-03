@@ -10,7 +10,7 @@ from starlette.responses import RedirectResponse
 from authlib.integrations.starlette_client import OAuth, OAuthError
 from starlette.middleware.sessions import SessionMiddleware
 import os  
-  # Function to create a ReAct agent
+# Function to create a ReAct agent
 
 from dotenv import load_dotenv
 from config import CLIENT_ID, CLIENT_SECRET, SECRET_KEY, GROQ_API_KEY, GOOGLE_API_KEY, MONGODB_CONNECTION_URI, WEAVIATE_API_KEY, WEAVIATE_URL
@@ -22,11 +22,11 @@ from httpx_oauth.clients.google import GoogleOAuth2
 from fastapi_users.authentication import CookieTransport
 from fastapi_users.authentication import JWTStrategy
 
-from api.api import router 
+from api.api import router
 
 import google.oauth2.credentials
 # import google_auth_oauthlib.flow
-from pymongo import MongoClient
+# from pymongo import MongoClient
 
 import weaviate
 from weaviate.classes.init import Auth
@@ -45,6 +45,7 @@ config_data = {'GOOGLE_CLIENT_ID': CLIENT_ID, 'GOOGLE_CLIENT_SECRET': CLIENT_SEC
 
 origins = [
     "http://localhost:5173",
+    "*"
 ]
 
 app.add_middleware(SessionMiddleware, secret_key=SECRET_KEY)

@@ -1,0 +1,47 @@
+.pdf-viewer-wrapper {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+.reference-link {
+  color: #0066cc;
+  text-decoration: none;
+  font-weight: bold;
+  background-color: #f0f7ff;
+  padding: 2px 5px;
+  border-radius: 3px;
+  transition: all 0.2s ease;
+  cursor: pointer;
+  display: inline-block;
+  margin: 0 2px;
+}
+
+.reference-link:hover {
+  background-color: #d0e6ff;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+  transform: translateY(-1px);
+}
+
+.reference-link:active {
+  background-color: #b8daff;
+  transform: translateY(0);
+}
+
+.active-reference {
+  background-color: #0066cc !important;
+  color: white !important;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.2) !important;
+}
+
+/* Animation for page transition */
+.pdf-viewer-container {
+  transition: opacity 0.3s ease;
+}
+
+/* Highlight effect for selected text */
+.highlight-text {
+  background-color: rgba(255, 230, 0, 0.4);
+  border-radius: 2px;
+  padding: 2px 0;
+}

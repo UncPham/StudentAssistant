@@ -532,6 +532,44 @@ body {
   border-color: var(--soft-blue);
 }
 
+
+/* Add styles for selected elements in the PDF */
+.selected-element-info {
+  background-color: var(--light-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 16px;
+  font-size: 14px;
+}
+
+.selected-element-info h4 {
+  margin: 0 0 8px 0;
+  font-size: 16px;
+  color: var(--text-primary);
+}
+
+.selected-element-info p {
+  margin: 0;
+  color: var(--text-secondary);
+}
+
+.selected-element-info .element-id {
+  font-family: monospace;
+  font-size: 12px;
+  color: var(--deep-gray);
+  margin-top: 8px;
+}
+
+.selected-element-content {
+  margin-top: 8px;
+  padding: 8px;
+  background-color: white;
+  border-radius: 4px;
+  max-height: 100px;
+  overflow-y: auto;
+}
+
 /* Thinking animation */
 .thinking {
   min-width: 60px;

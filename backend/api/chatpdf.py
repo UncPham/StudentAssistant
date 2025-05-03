@@ -1,10 +1,16 @@
 from fastapi import APIRouter, Request, UploadFile, File, Depends, Body 
+import os
+from marker.config.parser import ConfigParser
+from marker.converters.pdf import PdfConverter
+from marker.models import create_model_dict
+from marker.output import text_from_rendered
+from backend.config import CACHE_DIR
 # RAG
-from unstructured.partition.pdf import partition_pdf
-import base64
-# from IPython.display import Image, display
+from marker.config.printer import CustomClickPrinter
+from marker.logger import configure_logging
+from marker.output import save_output
+
 from langchain_groq import ChatGroq
-from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 import uuid
 from langchain.vectorstores import Chroma
@@ -14,8 +20,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.retrievers.multi_vector import MultiVectorRetriever
 from langchain_core.runnables import RunnablePassthrough, RunnableLambda
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import StrOutputParser
-from langchain.embeddings import HuggingFaceEmbeddings
+from langchain_huggingface import HuggingFaceEmbeddings  # Updated import
 from langchain.schema import HumanMessage
 import tempfile
 import shutil
@@ -26,18 +31,28 @@ from dotenv import load_dotenv
 import os
 import re
 import sys
+from typing import List, Dict
+import json
+from bs4 import BeautifulSoup
+import groq  # Add this import for handling RateLimitError
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
-from backend.config import GROQ_API_KEY, HUGGINGFACE_API_KEY
+from backend.config import GROQ_API_KEY, HUGGINGFACE_API_KEY, GOOGLE_API_KEY, CACHE_DIR
 from transformers import AutoModelForCausalLM, AutoTokenizer
+import google.generativeai as genai
 
 # import logging
 
 from pydantic import BaseModel
+import time
 
 class QueryRequest(BaseModel):
     query: str
+    file: str
+    doc_id: str | None = None
+
+class PolygonRequest(BaseModel):
     file: str
 
 router = APIRouter()
@@ -48,21 +63,154 @@ groq_api_key = os.getenv("GROQ_API_KEY")
 def get_db(request: Request):
     return request.app.weaviate_client
 
+# Hàm thiết lập schema Weaviate
 def setup_weaviate_schema(client: weaviate.WeaviateClient, class_name: str):
     schema = {
         "class": class_name,
         "properties": [
             {"name": "doc_id", "dataType": ["string"]},
-            {"name": "summary", "dataType": ["text"]},
+            # {"name": "summary", "dataType": ["text"]},
             {"name": "original_text", "dataType": ["text"]},
-            {"name": "page_number", "dataType": ["int"]}
+            {"name": "page_number", "dataType": ["int"]},
+            {"name": "polygon", "dataType": ["text"]},
+            {"name": "bbox", "dataType": ["text"]},
+            {"name": "html", "dataType": ["text"]}
         ],
         "vectorizer": "none"
     }
-    # Kiểm tra xem class đã tồn tại chưa
     existing_classes = client.collections.list_all()
     if class_name not in [collection.name for collection in existing_classes.values()]:
         client.collections.create_from_dict(schema)
+
+# Hàm làm sạch HTML và trích xuất văn bản
+def clean_html(html_text: str) -> str:
+    soup = BeautifulSoup(html_text, "html.parser")
+    for tag in soup.find_all(['sup', 'i', 'b']):
+        tag.unwrap()
+    text = soup.get_text(separator=" ", strip=True)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+# Hàm chia văn bản thành các chunk
+def chunk_text(text: str, max_chars: int = 1000, combine_under: int = 200) -> List[str]:
+    if len(text) <= max_chars:
+        return [text]
+    
+    chunks = []
+    current_chunk = ""
+    words = text.split()
+    
+    for word in words:
+        if len(current_chunk) + len(word) + 1 <= max_chars:
+            current_chunk += word + " "
+        else:
+            if len(current_chunk.strip()) >= combine_under:
+                chunks.append(current_chunk.strip())
+                current_chunk = word + " "
+            else:
+                current_chunk += word + " "
+    
+    if current_chunk.strip():
+        chunks.append(current_chunk.strip())
+    
+    return chunks
+
+# Hàm trích xuất nội dung từ JSON
+def extract_content_from_json(json_data: Dict) -> List[Dict]:
+    extracted_data = []
+    
+    for page in json_data.get("children", []):
+        if page["block_type"] != "Page":
+            continue
+        
+        page_number = int(page["id"].split("/")[2])
+        for child in page.get("children", []):
+            block_type = child["block_type"]
+            block_id = child["id"]
+            html_content = child.get("html", "")
+            polygon = json.dumps(child.get("polygon", []))  # Chuyển thành JSON string
+            bbox = json.dumps(child.get("bbox", []))        # Chuyển thành JSON string
+            
+            if block_type in ["Text", "TextInlineMath"]:
+                cleaned_text = clean_html(html_content)
+                if not cleaned_text:
+                    continue
+
+                extracted_data.append({
+                    "doc_id": block_id,
+                    "original_text": cleaned_text,
+                    "html": cleaned_text,  # Lưu HTML đã làm sạch
+                    "page_number": page_number,
+                    "polygon": polygon,
+                    "bbox": bbox
+                })
+            
+            elif block_type == "ListGroup":
+                for list_item in child.get("children", []):
+                    if list_item["block_type"] != "ListItem":
+                        continue
+                    cleaned_text = clean_html(list_item.get("html", ""))
+                    if not cleaned_text:
+                        continue
+                    
+                    extracted_data.append({
+                        "doc_id": list_item["id"],
+                        "original_text": cleaned_text,
+                        "html": cleaned_text,
+                        "page_number": page_number,
+                        "polygon": json.dumps(list_item.get("polygon", [])),
+                        "bbox": json.dumps(list_item.get("bbox", []))
+                    })
+            elif block_type == "FigureGroup":
+                for list_item in child.get("children", []):
+                    if list_item["block_type"] != "Caption":
+                        continue
+                    cleaned_text = clean_html(list_item.get("html", ""))
+                    if not cleaned_text:
+                        continue
+                    
+                    extracted_data.append({
+                        "doc_id": list_item["id"],
+                        "original_text": cleaned_text,
+                        "html": cleaned_text,
+                        "page_number": page_number,
+                        "polygon": json.dumps(list_item.get("polygon", [])),
+                        "bbox": json.dumps(list_item.get("bbox", []))
+                    })
+
+            elif block_type == "Equation":
+                cleaned_text = html_content
+                if not cleaned_text:
+                    continue
+
+                extracted_data.append({
+                    "doc_id": block_id,
+                    "original_text": cleaned_text,
+                    "html": cleaned_text,  # Lưu HTML đã làm sạch
+                    "page_number": page_number,
+                    "polygon": polygon,
+                    "bbox": bbox
+                })
+
+            elif block_type == "TableGroup":
+                for list_item in child.get("children", []):
+                    if list_item["block_type"] != "Table":
+                        continue
+                    cleaned_text = list_item.get("html", "")
+                    if not cleaned_text:
+                        continue
+                    
+                    extracted_data.append({
+                        "doc_id": list_item["id"],
+                        "original_text": cleaned_text,
+                        "html": cleaned_text,
+                        "page_number": page_number,
+                        "polygon": json.dumps(list_item.get("polygon", [])),
+                        "bbox": json.dumps(list_item.get("bbox", []))
+                    })
+
+    
+    return extracted_data
 
 @router.post("/embeddings")
 async def embeddings_pdf(file: UploadFile = File(...), weaviate_client=Depends(get_db)):
@@ -70,33 +218,36 @@ async def embeddings_pdf(file: UploadFile = File(...), weaviate_client=Depends(g
         shutil.copyfileobj(file.file, temp_file)
         temp_file_path = temp_file.name 
 
-    # login(token=HUGGINGFACE_API_KEY)
-    
-    chunks = partition_pdf(
-        filename=temp_file_path,
-        infer_table_structure=True,            # extract tables
-        strategy="hi_res",                     # mandatory to infer tables
+    config = {
+        "output_format": "json",
+        # "cache_dir": "models_cache",  # Thêm đường dẫn cache
+        # "model_cache": True,  # Bật cache cho mô hình
+        "ADDITIONAL_KEY": "VALUE"
+    }
+    config_parser = ConfigParser(config)
 
-        # extract_image_block_types=["Image"],   # Add 'Table' to list to extract image of tables
-        # image_output_dir_path=output_path,   # if None, images and tables will saved in base64
-
-        # extract_image_block_to_payload=True,   # if true, will extract base64 for API usage
-
-        chunking_strategy="by_title",          # or 'basic'
-        max_characters=10000,                  # defaults to 500
-        combine_text_under_n_chars=2000,       # defaults to 0
-        new_after_n_chars=6000,
-        include_page_breaks=True
-
-        # extract_images_in_pdf=True,          # deprecated
+    converter = PdfConverter(
+        config=config_parser.generate_config_dict(),
+        artifact_dict=create_model_dict(),
+        processor_list=config_parser.get_processors(),
+        renderer=config_parser.get_renderer(),
+        llm_service=config_parser.get_llm_service()
     )
+    rendered = converter(temp_file_path)
     
-    # tables = []
-    texts = []
-    page_numbers = []
-    for chunk in chunks:
-        texts.append(str(chunk))
-        page_numbers.append(chunk.metadata.page_number if hasattr(chunk.metadata, 'page_number') else 1)
+    text, _, images = text_from_rendered(rendered)
+
+    try:
+        json_obj = json.loads(text)
+    except json.JSONDecodeError:
+        os.remove(temp_file_path)
+        return {
+            "status": "error",
+            "message": "Invalid JSON format in rendered text",
+        }
+
+    extracted_data = extract_content_from_json(json_obj)
+    texts = [item["original_text"] for item in extracted_data]
 
     # Kiểm tra xem texts có rỗng không
     if not texts:
@@ -106,55 +257,30 @@ async def embeddings_pdf(file: UploadFile = File(...), weaviate_client=Depends(g
             "message": "Không tìm thấy nội dung văn bản trong PDF để xử lý",
         }
     else:
-        print("Found texts")
+        print("Found texts: ", len(texts))
 
-    prompt_text = """
-    You are an assistant tasked with summarizing tables and text.
-    Give a concise summary of the table or text.
-
-    Respond only with the summary, no additionnal comment.
-    Do not start your message by saying "Here is a summary" or anything like that.
-    Just give the summary as it is.
-
-    Table or text chunk: {element}
-
-    """
-    prompt = ChatPromptTemplate.from_template(prompt_text)
-
-    # Summary chain
-    model = ChatGroq(temperature=0.5, model="llama-3.1-8b-instant")
-    summarize_chain = {"element": lambda x: x} | prompt | model | StrOutputParser()
-
-    text_summaries = summarize_chain.batch(texts)
-
-    # Kiểm tra xem text_summaries có rỗng không
-    if not text_summaries:
-        os.remove(temp_file_path)
-        return {
-            "status": "error",
-            "message": "Không thể tạo bản tóm tắt từ nội dung PDF",
-        }
-    else:
-        print("Found text_summaries")
-
-    embedding_function = HuggingFaceEmbeddings()
-    summary_embeddings = embedding_function.embed_documents(text_summaries)
-
+    embedding_function = HuggingFaceEmbeddings(
+        model_name="intfloat/multilingual-e5-large-instruct",
+        cache_folder=CACHE_DIR,
+        model_kwargs={'device': 'cpu'}
+    )
+    embeddings = embedding_function.embed_documents(texts)
     
     class_name = f"Vector_Store_{file.filename.replace('.', '_')}"
     class_name = re.sub(r'[^a-zA-Z0-9_]', '_', class_name)
     setup_weaviate_schema(weaviate_client, class_name)
 
     collection = weaviate_client.collections.get(class_name)
-    doc_ids = [str(uuid.uuid4()) for _ in texts]
 
-    for i, (text, summary, embedding, page) in enumerate(zip(texts, text_summaries, summary_embeddings, page_numbers)):
-        doc_id = doc_ids[i]
+    for item, embedding in zip(extracted_data, embeddings):
         doc_data = {
-            "doc_id": doc_id,
-            "summary": summary,
-            "original_text": text,
-            "page_number": page
+            "doc_id": item["doc_id"],
+            # "summary": summary,
+            "original_text": item["original_text"],
+            "page_number": item["page_number"],
+            "polygon": item["polygon"],
+            "bbox": item["bbox"],
+            "html": item["html"]
         }
         collection.data.insert(
             properties=doc_data,
@@ -177,32 +303,28 @@ def build_prompt(kwargs):
     # Tạo context từ các tài liệu trả về, với số thứ tự
     if docs:
         context_text = "\n".join(
-            [f"[{i+1}] Summary: {doc['summary']}\n" for i, doc in enumerate(docs)]
+            [f"[{i+1}]: {doc['original_text']}\n" for i, doc in enumerate(docs)]
         )
     else:
         context_text = "No context available."
 
     # Tạo template prompt
     prompt_template = f"""
-    You are a technical expert.
-    You answer the questions truthfully on the basis of the documents provided.
-    For each document, check whether it is related to the question.
-    To answer the question, only use documents that are related to the question.
-    Ignore documents that do not relate to the question.
-    If the answer is contained in several documents, summarize them.
-    Always use references in the form [NUMBER OF DOCUMENT] if you use information from a document, e.g. [3] for document [3].
-    Never name the documents, only enter a number in square brackets as a reference.
-    The reference may only refer to the number in square brackets after the passage.
-    Otherwise, do not use brackets in your answer and give ONLY the number of the document without mentioning the word document.
-    Give a precise, accurate and structured answer without repeating the question.
-    Answer only on the basis of the documents provided. Do not make up facts.
-    If the documents cannot answer the question or you are not sure, say so.
-    These are the documents:
+    You are a technical expert tasked with answering questions accurately based solely on the provided documents.
+    Your role is to:
+    - Evaluate each document to determine its relevance to the question.
+    - Use only documents directly related to the question to formulate your answer.
+    - Ignore any documents that are irrelevant to the question.
+    - If multiple documents contain relevant information, synthesize and summarize the information concisely.
+    - Cite each piece of information using the document number in square brackets, e.g., [3], referring only to the number in brackets after the document.
+    - Provide a precise, structured, and accurate answer without repeating the question.
+    - Do not fabricate facts or include information not present in the provided documents.
+    - If the documents do not contain enough information to answer the question or the answer is unclear, explicitly state: "The provided documents do not contain enough information to answer the question."
+    - Avoid using brackets for anything other than document references.
 
     Context:
     {context_text}
 
-    Question:
     {user_question}
 
     Answer:
@@ -216,18 +338,18 @@ def build_prompt(kwargs):
 
 @router.post("/query")
 async def query_pdf(request: QueryRequest, weaviate_client=Depends(get_db)):
+    # Log the incoming request data
+    print(f"Received query: {request.query}, file: {request.file}, doc_id: {request.doc_id}")
+
     query = request.query
     file_name = request.file
+    doc_id = request.doc_id
 
     if not query or not file_name:
         return {
             "status": "error",
             "message": "Query và file_name là bắt buộc"
         }
-
-    # Tạo embedding cho truy vấn
-    embedding_function = HuggingFaceEmbeddings()
-    query_embedding = embedding_function.embed_query(query)
 
     # Tên class tương ứng với file
     class_name = f"Vector_Store_{file_name.replace('.', '_')}"
@@ -243,18 +365,43 @@ async def query_pdf(request: QueryRequest, weaviate_client=Depends(get_db)):
 
     # Truy vấn Weaviate
     collection = weaviate_client.collections.get(class_name)
+
+    # Tạo embedding cho truy vấn
+    embedding_function = HuggingFaceEmbeddings(
+        model_name="intfloat/multilingual-e5-large-instruct",
+        cache_folder=CACHE_DIR,
+        model_kwargs={'device': 'cpu'}
+    )
+    query_embedding = embedding_function.embed_query(query)
+    
+    # Query for the nearest vector match, excluding the exact doc_id
     result = collection.query.near_vector(
         near_vector=query_embedding,
-        limit=5,
-        return_properties=["summary", "original_text", "page_number"]
+        limit=15,
+        return_properties=["original_text", "doc_id"]
     )
+
+    if doc_id:
+        try:
+            doc_id_result = collection.query.fetch_objects(
+                filters=weaviate.classes.query.Filter.by_property("doc_id").equal(doc_id),
+                return_properties=["original_text"],
+                limit=1
+            )
+            if doc_id_result.objects:
+                original_text = doc_id_result.objects[0].properties.get("original_text", "")
+                query = f"The main context: {query} \n Answer the question: {original_text}"
+                print(f"Updated query with original_text: {query}")
+            else:
+                print(f"No document found for doc_id: {doc_id}")
+        except weaviate.exceptions.WeaviateQueryError as e:
+            print(f"Warning: Failed to fetch document for doc_id {doc_id}: {str(e)}")
 
     # Lấy danh sách các tài liệu từ kết quả
     retrieved_docs = [
         {
-            "summary": obj.properties["summary"],
             "original_text": obj.properties["original_text"],
-            "page_number": obj.properties.get("page_number", 1)  # Mặc định là trang 1 nếu không có
+            "doc_id": obj.properties["doc_id"]
         }
         for obj in result.objects
     ]
@@ -268,7 +415,7 @@ async def query_pdf(request: QueryRequest, weaviate_client=Depends(get_db)):
         | RunnablePassthrough().assign(
             response=(
                 RunnableLambda(build_prompt)
-                | ChatGroq(model="llama-3.1-8b-instant", api_key=GROQ_API_KEY)  # Thay bằng Groq thay vì OpenAI
+                | ChatGoogleGenerativeAI(model="gemini-2.0-flash-001", temperature=0.2, api_key=GOOGLE_API_KEY)  # Thay bằng Groq thay vì OpenAI
                 | StrOutputParser()
             )
         )
@@ -281,4 +428,39 @@ async def query_pdf(request: QueryRequest, weaviate_client=Depends(get_db)):
         "status": "success",
         "response": result["response"],
         "context": result["context"]
+    }
+
+@router.post("/polygon")
+async def query_pdf(request: PolygonRequest, weaviate_client=Depends(get_db)):
+    file_name = request.file
+
+    # Tạo tên class tương ứng
+    class_name = f"Vector_Store_{file_name.replace('.', '_')}"
+    class_name = re.sub(r'[^a-zA-Z0-9_]', '_', class_name)
+
+    # Kiểm tra class tồn tại
+    existing_classes = weaviate_client.collections.list_all()
+    if class_name not in [collection.name for collection in existing_classes.values()]:
+        return {
+            "status": "error",
+            "message": f"Không tìm thấy dữ liệu cho file {file_name}"
+        }
+
+    # Truy vấn toàn bộ id và polygon
+    collection = weaviate_client.collections.get(class_name)
+
+    objects = list(collection.iterator(return_properties=["doc_id", "polygon"]))
+    # Chuẩn hóa dữ liệu trả về
+    formatted_data = [
+        {
+            "doc_id": obj.properties["doc_id"],
+            "polygon": json.loads(obj.properties["polygon"])  # Parse chuỗi JSON thành mảng
+        }
+        for obj in objects
+        if "doc_id" in obj.properties and "polygon" in obj.properties
+    ]
+    
+    return {
+        "status": "success",
+        "data": formatted_data
     }
