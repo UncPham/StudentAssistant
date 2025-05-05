@@ -119,17 +119,17 @@ const PDFPolygonOverlay = ({ docData, currentPage, scale, containerRef, onPolygo
       maxY = Math.max(maxY, point[1])
     })
 
-    const sca_x = 1.25
-    const sca_y = 1.24
+    const sca_x = 1
+    const sca_y = 1.05
     
-    const sca_wh = 1.25
+    const sca_wh = 1
 
     // console.log(pageHeight)
 
     // Apply scale factor using the passed 'scale' prop
     return {
       left: `${5 + minX * sca_x * scale}px`,
-      top: `${pageHeight * (pageNumber-1) * 1.24 + minY * sca_y * scale}px`,
+      top: `${pageHeight * (pageNumber-1) + minY * sca_y * scale}px`,
       width: `${(maxX - minX) * sca_wh * scale}px`,
       height: `${(maxY - minY) * sca_wh * scale}px`,
     }

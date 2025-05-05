@@ -31,7 +31,7 @@ const ChatPDF = () => {
   const [selectedElement, setSelectedElement] = useState(null)
   const pdfContainerRef = useRef(null)
   const [pdfScale, setPdfScale] = useState(1)
-  const [pageHeight, setPageHeight] = useState(792)
+  const [pageHeight, setPageHeight] = useState(570)
   const [docData, setDocData] = useState(null)
 
   const url = "http://localhost:8000"
@@ -255,7 +255,7 @@ const ChatPDF = () => {
                 content: response.data.response,
                 context: response.data.context,
             };
-            console.log(aiMessage);
+            console.log(response.data);
             setMessages((prev) => [...prev, aiMessage]);
             setIsThinking(false);
         }
