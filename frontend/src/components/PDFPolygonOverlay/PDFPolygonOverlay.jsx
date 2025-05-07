@@ -122,7 +122,7 @@ const PDFPolygonOverlay = ({ docData, currentPage, scale, containerRef, onPolygo
     const sca_x = 1
     const sca_y = 1.05
     
-    const sca_wh = 1
+    const sca_wh = 1.08
 
     // console.log(pageHeight)
 
