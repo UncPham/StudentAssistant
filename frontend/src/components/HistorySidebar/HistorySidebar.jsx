@@ -1,55 +1,106 @@
-import { Plus, FileText } from "lucide-react"
+"use client"
+
+import { ExternalLink, Book } from "lucide-react"
 import { useState, useEffect } from "react"
+import "./HistorySidebar.css"
 
-const HistorySidebar = () => {
-  const [searchQuery, setSearchQuery] = useState("")
-  const [files, setFiles] = useState([])
-  const filteredFiles = files.filter((file) => file.name.toLowerCase().includes(searchQuery.toLowerCase()))
+const HistorySidebar = ({ context }) => {
+  const [activeTab, setActiveTab] = useState("rag")
+  const [ragDocuments, setRagDocuments] = useState([])
+  const [webDocuments, setWebDocuments] = useState([])
 
-  const renderFileList = () => {
-    if (filteredFiles.length === 0) {
+  useEffect(() => {
+    if (context) {
+      console.log("web_documents:", context.web_documents) // Debug
+      const rag = context.rag_documents || []
+      setRagDocuments(rag)
+      const web = context.web_documents || []
+      setWebDocuments(web)
+      if (rag.length > 0) {
+        setActiveTab("rag")
+      } else if (web.length > 0) {
+        setActiveTab("web")
+      }
+    }
+  }, [context])
+
+  const renderRagDocuments = () => {
+    if (ragDocuments.length === 0) {
       return (
         <div className="empty-state">
-          <FileText size={24} className="empty-icon" />
-          <p>No chat sessions found</p>
-          <p>Upload a PDF to get started</p>
+          <Book size={24} className="empty-icon" />
+          <p>No document references found</p>
         </div>
       )
     }
 
-    return filteredFiles.map((file) => (
-      <div
-        key={file.id}
-        className={`file-item ${activeFile && activeFile.id === file.id ? "active" : ""}`}
-        onClick={() => setActiveFile(file)}
-      >
-        <FileText size={16} />
-        <div className="file-item-details">
-          <div className="file-item-name">{file.name}</div>
-          <div className="file-item-timestamp">{file.timestamp}</div>
+    return ragDocuments.map((doc, index) => (
+      <div key={index} className="reference-item">
+        <div className="reference-number">{index + 1}</div>
+        <div className="reference-content">
+          <p>{doc.document}</p>
         </div>
       </div>
-    ))
+    ))}
+
+  const renderWebDocuments = () => {
+    if (webDocuments.length === 0) {
+      return (
+        <div className="empty-state">
+          <ExternalLink size={24} className="empty-icon" />
+          <p>No web references found</p>
+        </div>
+      )
+    }
+
+    return webDocuments.map((doc, index) => {
+      const url = doc.url && typeof doc.url === "object" && doc.url.url ? doc.url.url : "#"
+      return (
+        <div key={url || index} className="reference-item">
+          <div className="reference-number">{index + 1}</div>
+          <div className="reference-content">
+            <a
+              href={url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="reference-link"
+            >
+              <ExternalLink size={14} />
+              {url}
+            </a>
+            <p className="reference-text">{doc.document}</p>
+          </div>
+        </div>
+      )
+    })
   }
 
   return (
-    <div className="pdf-sidebar">
-        <div className="pdf-sidebar-header">
-        <button className="new-chat-button" onClick={() => document.getElementById("pdf-upload").click()}>
-            <Plus size={16} />
-            New Chat
-        </button>
-        <div className="search-container">
-            <input
-            type="text"
-            className="search-input"
-            placeholder="Search files..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            />
+    <div className="pdf-sidebar history-sidebar">
+      <div className="pdf-sidebar-header">
+        <h3 className="sidebar-title">References</h3>
+        <div className="tab-navigation">
+          <button
+            className={`tab-button ${activeTab === "rag" ? "active" : ""}`}
+            onClick={() => setActiveTab("rag")}
+          >
+            <Book size={16} />
+            Document
+            {ragDocuments.length > 0 && <span className="tab-count">{ragDocuments.length}</span>}
+          </button>
+          <button
+            className={`tab-button ${activeTab === "web" ? "active" : ""}`}
+            onClick={() => setActiveTab("web")}
+          >
+            <ExternalLink size={16} />
+            Web
+            {webDocuments.length > 0 && <span className="tab-count">{webDocuments.length}</span>}
+          </button>
         </div>
-        </div>
-        <div className="pdf-sidebar-content">{renderFileList()}</div>
+      </div>
+      <div className="pdf-sidebar-content references-container">
+        {activeTab === "rag" ? renderRagDocuments() : renderWebDocuments()}
+      </div>
     </div>
   )
 }

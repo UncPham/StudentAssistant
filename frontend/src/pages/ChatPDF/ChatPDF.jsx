@@ -33,6 +33,7 @@ const ChatPDF = () => {
   const [pdfScale, setPdfScale] = useState(1)
   const [pageHeight, setPageHeight] = useState(570)
   const [docData, setDocData] = useState(null)
+  const [sidebarContext, setSidebarContext] = useState(null)
 
   const url = "http://localhost:8000"
 
@@ -127,6 +128,11 @@ const ChatPDF = () => {
   
     fetchPolygons();
   }, [activeFile]);
+
+  const handleViewInSidebar = (context) => {
+    setSidebarContext(context)
+    // console.log("Context passed to sidebar:", context)
+  }
   
 
   const handleFileUpload = async (e) => {
@@ -315,14 +321,14 @@ const ChatPDF = () => {
       setSelectedElement(element);
       
       // Add the element info to the chat
-      if (element) {
-          const promptMessage = {
-              id: messages.length + 1,
-              sender: "ai",
-              content: `What would you like to know about this context?`,
-          };
-          setMessages((prev) => [...prev, promptMessage]);
-      }
+      // if (element) {
+      //     const promptMessage = {
+      //         id: messages.length + 1,
+      //         sender: "ai",
+      //         content: `What would you like to know about this context?`,
+      //     };
+      //     setMessages((prev) => [...prev, promptMessage]);
+      // }
   }
 
 
@@ -474,7 +480,7 @@ const ChatPDF = () => {
   return (
     <div className="page-container">
       <div className="pdf-container">
-        <HistorySidebar/>
+        <HistorySidebar context={sidebarContext} />
 
         {!activeFile ? (
           <div className="pdf-main-empty">{renderDocumentViewer()}</div>
@@ -489,6 +495,11 @@ const ChatPDF = () => {
                       {/* {message.sender === "ai" && <div className="message-avatar">AI</div>} */}
                       <div className="message-content">{renderMessageContent(message)}</div>
                     </div>
+                    {message.sender === "ai" && message.context && (
+                      <button className="view-in-sidebar-button" onClick={() => handleViewInSidebar(message.context)}>
+                        View References
+                      </button>
+                    )}
                   </div>
                 ))}
 

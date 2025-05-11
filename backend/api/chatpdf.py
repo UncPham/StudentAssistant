@@ -39,11 +39,14 @@ from typing_extensions import TypedDict
 import json
 from bs4 import BeautifulSoup
 import groq  # Add this import for handling RateLimitError
+import base64
+from PIL import Image
+import io
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
 from backend.config import GROQ_API_KEY, TAVILY_API_KEY, GOOGLE_API_KEY, CACHE_DIR
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import VisionEncoderDecoderModel, ViTImageProcessor, AutoTokenizer
 import google.generativeai as genai
 
 # import logging
@@ -64,8 +67,10 @@ class GraphState(TypedDict):
     question: str
     generation: str
     search: str
-    documents: List[Document]
+    rag_documents: List[Document]
+    web_documents: List[Document]
     steps: List[str]
+    original_text: str
 
 router = APIRouter()
 
@@ -75,6 +80,22 @@ embedding_function = HuggingFaceEmbeddings(
     cache_folder=CACHE_DIR,
     model_kwargs={'device': 'cpu'}
 )
+
+# Khởi tạo mô hình và processor cho nlpconnect/vit-gpt2-image-captioning
+vision_model = VisionEncoderDecoderModel.from_pretrained("nlpconnect/vit-gpt2-image-captioning", cache_dir=CACHE_DIR)
+feature_extractor = ViTImageProcessor.from_pretrained("nlpconnect/vit-gpt2-image-captioning", cache_dir=CACHE_DIR)
+tokenizer = AutoTokenizer.from_pretrained("nlpconnect/vit-gpt2-image-captioning", cache_dir=CACHE_DIR)
+
+# Hàm tạo caption từ ảnh
+def generate_caption(image: Image.Image) -> str:
+    # Chuyển đổi ảnh sang định dạng phù hợp
+    pixel_values = feature_extractor(images=image, return_tensors="pt").pixel_values
+    
+    # Tạo caption
+    output_ids = vision_model.generate(pixel_values, max_length=100, num_beams=4, early_stopping=True)
+    caption = tokenizer.decode(output_ids[0], skip_special_tokens=True)
+    
+    return caption
 
 llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash-001", temperature=0.2, api_key=GOOGLE_API_KEY)
 
@@ -88,10 +109,12 @@ prompt = PromptTemplate(
     Your task is to answer questions accurately based solely on the provided documents.
 
     [MANDATORY RULES TO FOLLOW IN TASK COMPLETION]
-    - Use only documents directly related to the question to construct the answer.
+    - Prioritize the main document as the primary source to construct the answer. Ensure the answer closely aligns with its content.
+    - Use retrieval documents only if they are directly related to the question and complement the main document.
+    - Use web documents only as supplementary information to clarify or provide minor additional details, not as the main basis for the answer.
     - Provide a precise, structured, and accurate answer without repeating the question.
     - Do not fabricate facts or include information not present in the provided documents.
-    - If the documents do not contain enough information to answer the question or the answer is unclear, explicitly state: "The provided documents do not contain enough information to answer the question," and explain why you believe this to be the case.
+    - If there are no retrieval documents or none of the documents (main, retrieval) are relevant to the question, explicitly state: "The provided documents do not contain enough information to answer the question," and explain why you believe this to be the case.
 
     [TASK COMPLETION STEPS]
     Strictly follow each of these steps in order to complete the task:
@@ -101,7 +124,11 @@ prompt = PromptTemplate(
     4. Based on the synthesized information, provide the final answer.
 
     [CONTEXT DOCUMENT TO PROVIDE CONTEXT FOR QUESTION]
-    Documents: {documents}
+    retrieval Documents: {rag_documents}
+
+    web Documents: {web_documents}
+
+    main document: {original_text}
 
     [QUESTION TO ANSWER]
     Question: {question}
@@ -109,7 +136,7 @@ prompt = PromptTemplate(
     [YOUR ANSWER]
     Answer:
     """,
-    input_variables=["question", "documents"],
+    input_variables=["question", "rag_documents", "web_documents", "original_text"],
 )
 
 # Prompt cho retrieval grader
@@ -128,7 +155,7 @@ retrieval_prompt = PromptTemplate(
     Avoid simply stating the correct answer at the outset.
     
     Question: {question} \n
-    Fact: \n\n {documents} \n\n
+    Fact: \n\n {rag_documents} \n\n
 
     Assign a binary score:
     - 'yes' if the FACT has any relevance to the QUESTION, even if minimal.
@@ -136,12 +163,44 @@ retrieval_prompt = PromptTemplate(
 
     Example response: {{"score": "yes"}} or {{"score": "no"}}
     """,
-    input_variables=["question", "documents"],
+    input_variables=["question", "rag_documents"],
+)
+
+image_prompt = PromptTemplate(
+    template="""
+    [ROLE]
+    You are a professional image analysis expert.
+
+    [TASK]
+    Your task is to generate a detailed and accurate caption for the provided image, based solely on the visual content present in the image.
+
+    [MANDATORY RULES TO FOLLOW IN TASK COMPLETION]
+
+    - Describe only what is visibly present in the image.
+    - Do not infer, imagine, or include information that is not clearly shown in the image.
+    - The caption must be specific, structured, and clear. It should include: main subject(s), setting/context, actions (if any), colors, spatial relationships, and any notable visual details.
+    - If the image is unclear or lacks sufficient visual information, explicitly state: “The image is not clear enough to generate a detailed caption,”.
+
+    [TASK COMPLETION STEPS]
+    Strictly follow these steps to complete the task:
+
+    1. Identify the key visual elements in the image: subjects, setting, actions, prominent details.
+    2. Structure the description from general to specific.
+    3. Provide a complete and precise
+
+    [INPUT IMAGE TO ANALYZE]
+    Image: {image}
+
+    [YOUR ANSWER]
+    Caption:
+    """,
+    input_variables=["image"],
 )
 
 # Khởi tạo rag_chain và retrieval_grader
 rag_chain = prompt | llm | StrOutputParser()
 retrieval_grader = retrieval_prompt | llm | JsonOutputParser()
+vision_chain = image_prompt | llm | StrOutputParser()
 
 # Khởi tạo web_search_tool
 # os.environ["TAVILY_API_KEY"] = TAVILY_API_KEY
@@ -151,28 +210,42 @@ web_search_tool = TavilyClient(api_key=TAVILY_API_KEY)
 def retrieve(state):
     print("Retrieving documents...")
     question = state["question"]
-    documents = state.get("documents", [])  # Sử dụng documents từ state
+    rag_documents = state.get("rag_documents", [])  # Sử dụng documents từ state
     steps = state["steps"]
     steps.append("retrieve_documents")
-    return {"documents": documents, "question": question, "steps": steps}
+    return {"rag_documents": rag_documents, "question": question, "steps": steps}
 
 def generate(state):
     print("Generating answer...")
     question = state["question"]
-    documents = state["documents"]
+    rag_documents = state["rag_documents"]
+    web_documents = state.get("web_documents", [])
+    original_text = state.get("original_text", "")
+
+    # Định dạng danh sách rag_documents thành chuỗi có cấu trúc
+    rag_docs_str = "\n".join([f"Retrieval Document {i+1}: {doc.page_content}" for i, doc in enumerate(rag_documents)])
+
+    # Định dạng danh sách web_documents thành chuỗi có cấu trúc
+    web_docs_str = "\n".join([f"Web Document {i+1}: {doc.page_content}" for i, doc in enumerate(web_documents)])
+
     # Print the formatted prompt
     formatted_prompt = prompt.format(
-        documents="\n".join([doc.page_content for doc in documents]),
-        question=question
+        rag_documents="\n".join([doc.page_content for doc in rag_documents]),
+        web_documents="\n".join([doc.page_content for doc in web_documents]),
+        question=question,
+        original_text=original_text
     )
     print("Generated Prompt:")
     print(formatted_prompt)
-    generation = rag_chain.invoke({"documents": [doc.page_content for doc in documents], "question": question})
+    generation = rag_chain.invoke({"rag_documents": rag_docs_str,
+                                   "web_documents": web_docs_str, 
+                                   "question": question, 
+                                   "original_text": original_text})
     print(f"Generation: {generation}")
     steps = state["steps"]
     steps.append("generate_answer")
     return {
-        "documents": documents,
+        "rag_documents": rag_documents,
         "question": question,
         "generation": generation,
         "steps": steps,
@@ -181,24 +254,25 @@ def generate(state):
 def grade_documents(state):
     print("Grading documents...")
     question = state["question"]
-    documents = state["documents"]
+    rag_documents = state["rag_documents"]
     steps = state["steps"]
     steps.append("grade_document_retrieval")
     filtered_docs = []
     search = "No"
-    for d in documents:
+    for d in rag_documents:
         score = retrieval_grader.invoke(
-            {"question": question, "documents": d.page_content}
+            {"question": question, "rag_documents": d.page_content}
         )
         grade = score["score"]
         if grade == "yes":
             filtered_docs.append(d)
         else:
+            print(f"Document {d.page_content} is not relevant to the question.")
             search = "Yes"
             continue
 
     return {
-        "documents": filtered_docs,
+        "rag_documents": filtered_docs,
         "question": question,
         "search": search,
         "steps": steps,
@@ -207,7 +281,7 @@ def grade_documents(state):
 async def web_search(state):
     print("Performing web search...")
     question = state["question"]
-    documents = state.get("documents", [])
+    web_documents = state.get("web_documents", [])
     steps = state["steps"]
     steps.append("web_search")
     try:
@@ -222,20 +296,26 @@ async def web_search(state):
         # Convert search results to Document objects
         for result in search_results["results"]:
             print(f"Web search result: {result}")
-            documents.append(
-                Document(
-                    page_content=result.get("content", ""),
-                    metadata={
-                        "url": result.get("url", ""),
-                        "source": "web_search"
-                    }
-                )
+            score = retrieval_grader.invoke(
+                {"question": question, "rag_documents": result.get("content", "")}
             )
+            grade = score["score"]
+            if grade == "yes":
+                web_documents.append(
+                    Document(
+                        page_content=result.get("content", ""),
+                        metadata={
+                            "url": result.get("url", ""),
+                            "source": "web_search"
+                        }
+                    )
+                )
         print(f"Found {len(search_results)} web search results")
         
     except Exception as e:
         print(f"Web search error: {str(e)}")
         # Continue with existing documents if search fails
+    return {"web_documents": web_documents, "steps": steps}
 
 def decide_to_generate(state):
     search = state["search"]
@@ -378,22 +458,41 @@ def extract_content_from_json(json_data: Dict) -> List[Dict]:
                     })
             elif block_type == "FigureGroup":
                 for list_item in child.get("children", []):
-                    if list_item["block_type"] != "Caption":
-                        continue
-                    cleaned_text = clean_html(list_item.get("html", ""))
-                    if not cleaned_text:
-                        continue
-                    
-                    extracted_data.append({
-                        "doc_id": list_item["id"],
-                        "original_text": cleaned_text,
-                        "html": cleaned_text,
-                        "page_number": page_number,
-                        "polygon": json.dumps(list_item.get("polygon", [])),
-                        "bbox": json.dumps(list_item.get("bbox", []))
-                    })
+                    if list_item["block_type"] == "Caption":
+                        cleaned_text = clean_html(list_item.get("html", ""))
+                        if not cleaned_text:
+                            continue
+                        
+                        extracted_data.append({
+                            "doc_id": list_item["id"],
+                            "original_text": cleaned_text,
+                            "html": cleaned_text,
+                            "page_number": page_number,
+                            "polygon": json.dumps(list_item.get("polygon", [])),
+                            "bbox": json.dumps(list_item.get("bbox", []))
+                        })
+                    if list_item["block_type"] == "Figure":
+                        image = list_item.get("images", {})
+                        if not image:
+                            continue
+                        image_base64 = next(iter(image.values()), None)
+                        if not image_base64:
+                            continue
+                        image_data = base64.b64decode(image_base64)
+                        image = Image.open(io.BytesIO(image_data))
 
-            elif block_type == "Equation":
+                        caption = generate_caption(image)
+                        
+                        extracted_data.append({
+                            "doc_id": list_item["id"],
+                            "original_text": caption,
+                            "html": caption,
+                            "page_number": page_number,
+                            "polygon": json.dumps(list_item.get("polygon", [])),
+                            "bbox": json.dumps(list_item.get("bbox", []))
+                        })
+
+            elif block_type in ["Equation", "Table"]:
                 cleaned_text = html_content
                 if not cleaned_text:
                     continue
@@ -401,7 +500,7 @@ def extract_content_from_json(json_data: Dict) -> List[Dict]:
                 extracted_data.append({
                     "doc_id": block_id,
                     "original_text": cleaned_text,
-                    "html": cleaned_text,  # Lưu HTML đã làm sạch
+                    "html": cleaned_text,  
                     "page_number": page_number,
                     "polygon": polygon,
                     "bbox": bbox
@@ -409,20 +508,32 @@ def extract_content_from_json(json_data: Dict) -> List[Dict]:
 
             elif block_type == "TableGroup":
                 for list_item in child.get("children", []):
-                    if list_item["block_type"] != "Table":
-                        continue
-                    cleaned_text = list_item.get("html", "")
-                    if not cleaned_text:
-                        continue
-                    
-                    extracted_data.append({
-                        "doc_id": list_item["id"],
-                        "original_text": cleaned_text,
-                        "html": cleaned_text,
-                        "page_number": page_number,
-                        "polygon": json.dumps(list_item.get("polygon", [])),
-                        "bbox": json.dumps(list_item.get("bbox", []))
-                    })
+                    if list_item["block_type"] == "Table":
+                        cleaned_text = list_item.get("html", "")
+                        if not cleaned_text:
+                            continue
+                        
+                        extracted_data.append({
+                            "doc_id": list_item["id"],
+                            "original_text": cleaned_text,
+                            "html": cleaned_text,
+                            "page_number": page_number,
+                            "polygon": json.dumps(list_item.get("polygon", [])),
+                            "bbox": json.dumps(list_item.get("bbox", []))
+                        })
+                    if list_item["block_type"] == "Caption":
+                        cleaned_text = clean_html(list_item.get("html", ""))
+                        if not cleaned_text:
+                            continue
+                        
+                        extracted_data.append({
+                            "doc_id": list_item["id"],
+                            "original_text": cleaned_text,
+                            "html": cleaned_text,
+                            "page_number": page_number,
+                            "polygon": json.dumps(list_item.get("polygon", [])),
+                            "bbox": json.dumps(list_item.get("bbox", []))
+                        })
 
     
     return extracted_data
@@ -435,8 +546,6 @@ async def embeddings_pdf(file: UploadFile = File(...), weaviate_client=Depends(g
 
     config = {
         "output_format": "json",
-        # "cache_dir": "models_cache",  # Thêm đường dẫn cache
-        # "model_cache": True,  # Bật cache cho mô hình
         "ADDITIONAL_KEY": "VALUE"
     }
     config_parser = ConfigParser(config)
@@ -515,46 +624,6 @@ async def embeddings_pdf(file: UploadFile = File(...), weaviate_client=Depends(g
         "message": "Successfully uploaded and processed PDF",
     }
 
-# Hàm xây dựng prompt
-def build_prompt(kwargs):
-    docs = kwargs["context"]  # Danh sách các tài liệu từ Weaviate
-    user_question = kwargs["question"]
-
-    # Tạo context từ các tài liệu trả về, với số thứ tự
-    if docs:
-        context_text = "\n".join(
-            [f"[{i+1}]: {doc['original_text']}\n" for i, doc in enumerate(docs)]
-        )
-    else:
-        context_text = "No context available."
-
-    # Tạo template prompt
-    prompt_template = f"""
-    You are a technical expert tasked with answering questions accurately based solely on the provided documents.
-    Your role is to:
-    - Evaluate each document to determine its relevance to the question.
-    - Use only documents directly related to the question to formulate your answer.
-    - Ignore any documents that are irrelevant to the question.
-    - If multiple documents contain relevant information, synthesize and summarize the information concisely.
-    - Cite each piece of information using the document number in square brackets, e.g., [3], referring only to the number in brackets after the document.
-    - Provide a precise, structured, and accurate answer without repeating the question.
-    - Do not fabricate facts or include information not present in the provided documents.
-    - If the documents do not contain enough information to answer the question or the answer is unclear, explicitly state: "The provided documents do not contain enough information to answer the question."
-    - Avoid using brackets for anything other than document references.
-
-    Context:
-    {context_text}
-
-    {user_question}
-
-    Answer:
-    """
-
-    prompt_content = [{"type": "text", "text": prompt_template}]
-
-    return ChatPromptTemplate.from_messages(
-        [HumanMessage(content=prompt_content)]
-    )
 
 @router.post("/query")
 async def query_pdf(request: QueryRequest, weaviate_client=Depends(get_db)):
@@ -572,7 +641,7 @@ async def query_pdf(request: QueryRequest, weaviate_client=Depends(get_db)):
         }
 
     # Tên class tương ứng với file
-    class_name = f"Vector_Store_{file_name.replace('.', '_')}_RAG"
+    class_name = f"Vector_Store_{file_name.replace('.', '_')}"
     class_name = re.sub(r'[^a-zA-Z0-9_]', '_', class_name)
 
     # Kiểm tra xem class có tồn tại không
@@ -584,33 +653,35 @@ async def query_pdf(request: QueryRequest, weaviate_client=Depends(get_db)):
         }
 
     # Truy vấn Weaviate
-    collection = weaviate_client.collections.get(class_name)
+    polygon_collection = weaviate_client.collections.get(f"{class_name}_Polygon")
+    rag_collection = weaviate_client.collections.get(f"{class_name}_RAG")
 
     # Tạo embedding cho truy vấn
     query_embedding = embedding_function.embed_query(query)
     
     # Query for the nearest vector match, excluding the exact doc_id
-    result = collection.query.near_vector(
+    result = rag_collection.query.near_vector(
         near_vector=query_embedding,
         limit=5,
         return_properties=["original_text"]
     )
 
-    # if doc_id:
-    #     try:
-    #         doc_id_result = collection.query.fetch_objects(
-    #             filters=weaviate.classes.query.Filter.by_property("doc_id").equal(doc_id),
-    #             return_properties=["original_text"],
-    #             limit=1
-    #         )
-    #         if doc_id_result.objects:
-    #             original_text = doc_id_result.objects[0].properties.get("original_text", "")
-    #             query = f"The main context: {original_text} \n Answer the question: {query}"
-    #             print(f"Updated query with original_text: {query}")
-    #         else:
-    #             print(f"No document found for doc_id: {doc_id}")
-    #     except weaviate.exceptions.WeaviateQueryError as e:
-    #         print(f"Warning: Failed to fetch document for doc_id {doc_id}: {str(e)}")
+    original_text = ""
+    if doc_id:
+        try:
+            doc_id_result = polygon_collection.query.fetch_objects(
+                filters=weaviate.classes.query.Filter.by_property("doc_id").equal(doc_id),
+                return_properties=["original_text"],
+                limit=1
+            )
+            if doc_id_result.objects:
+                original_text = doc_id_result.objects[0].properties.get("original_text", "")
+            else:
+                print(f"No document found for doc_id: {doc_id}")
+        except weaviate.exceptions.WeaviateQueryError as e:
+            print(f"Warning: Failed to fetch document for doc_id {doc_id}: {str(e)}")
+
+    print(f"Original text for doc_id {doc_id}: {original_text}")
 
     # Lấy danh sách các tài liệu từ kết quả
     retrieved_docs =  [
@@ -621,41 +692,32 @@ async def query_pdf(request: QueryRequest, weaviate_client=Depends(get_db)):
         for obj in result.objects
     ]
 
-    # # Xây dựng chuỗi xử lý với LangChain
-    # chain_with_sources = (
-    #     {
-    #         "context": lambda _: retrieved_docs,  # Trả về danh sách tài liệu từ Weaviate
-    #         "question": RunnablePassthrough(),  # Truyền câu hỏi trực tiếp
-    #     }
-    #     | RunnablePassthrough().assign(
-    #         response=(
-    #             RunnableLambda(build_prompt)
-    #             | ChatGoogleGenerativeAI(model="gemini-2.0-flash-001", temperature=0.2, api_key=GOOGLE_API_KEY)  # Thay bằng Groq thay vì OpenAI
-    #             | StrOutputParser()
-    #         )
-    #     )
-    # )
-
-    # Thực thi chuỗi
-    # result = chain_with_sources.invoke(query)
-
      # Gọi custom_graph để xử lý
     state = {
         "question": query,
-        "documents": retrieved_docs,
+        "rag_documents": retrieved_docs,
+        "web_documents": [],
+        "original_text": original_text,
         "steps": [],
         "generation": "",
         "search": "No"
     }
+
     result = await custom_graph.ainvoke(state)
 
     return {
         "status": "success",
         "response": result["generation"],
-        "context": [
-            {"original_text": doc.page_content, "doc_id": doc.metadata}
-            for doc in result["documents"]
-        ]
+        "context": {
+            "rag_documents": [
+                {"document": doc.page_content}
+                for doc in result["rag_documents"]
+            ],
+            "web_documents": [
+                {"document": doc.page_content, "url": doc.metadata}
+                for doc in result["web_documents"]
+            ]
+        }
     }
 
 @router.post("/polygon")
