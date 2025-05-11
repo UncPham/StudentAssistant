@@ -1,19 +1,16 @@
 # Student Assistant: AN INTERACTIVE RAG APPLICATION
 
----
 
 **Student Assistant** is a powerful assistant built on modern RAG (Retrieval-Augmented Generation) technology, revolutionizing the way you interact with and extract knowledge from study materials. 
 The breakthrough of Student Assistant lies in its ability to transform static PDF files into an interactive and dynamic learning space. Accompanying this is an intelligent chatbot, always ready to answer any questions based on the very content of the documents.
 
 
 ## Features
----
 + **Document upload & analysis**: Upload and analyze documents  
 + **Interactive slide**: Interact directly with the content of the documents  
 + **Corrective RAG chatbot**: LLM-powered chatbot answers user questions based on the document content and online information
 
 ## Installation
----
 To build and run Student Assistant on your computer device, follow these steps:
 
 1. **Clone the Repository**:
@@ -35,17 +32,11 @@ docker-compose up --build
 + Your website will be available at *http://localhost:5173/*
 
 ## Usage
----
 + When the website is working:
-
 + Upload your PDF document.
-
 + Wait for your document to be analyzed.
-
 + Select the part of the document you don't understand or want to ask about.
-
 + Type your question.
-
 + The LLM will generate an answer for you.
 
 ## Acknowledgements
