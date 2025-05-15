@@ -456,7 +456,7 @@ def extract_content_from_json(json_data: Dict) -> List[Dict]:
                         "polygon": json.dumps(list_item.get("polygon", [])),
                         "bbox": json.dumps(list_item.get("bbox", []))
                     })
-            elif block_type == "FigureGroup":
+            elif block_type in ["FigureGroup", "PictureGroup"]:
                 for list_item in child.get("children", []):
                     if list_item["block_type"] == "Caption":
                         cleaned_text = clean_html(list_item.get("html", ""))
@@ -471,7 +471,7 @@ def extract_content_from_json(json_data: Dict) -> List[Dict]:
                             "polygon": json.dumps(list_item.get("polygon", [])),
                             "bbox": json.dumps(list_item.get("bbox", []))
                         })
-                    if list_item["block_type"] == "Figure":
+                    if list_item["block_type"] in ["Figure", "Picture"]:
                         image = list_item.get("images", {})
                         if not image:
                             continue
